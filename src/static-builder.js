@@ -70,7 +70,7 @@ function serviceHtml(service, tools) {
     description: service.description,
     applicationCategory: service.category,
     operatingSystem: 'MCP (Model Context Protocol)',
-    url: `https://mcp.rootz.global/static/service/${service.slug}.html`,
+    url: `https://mcp.epistery.io/static/service/${service.slug}.html`,
     sameAs: [service.website_url, service.repository_url].filter(Boolean),
     offers: service.auth_required ? {
       '@type': 'Offer',
@@ -91,7 +91,7 @@ function serviceHtml(service, tools) {
 <meta charset="utf-8">
 <title>${escapeHtml(title)} — MCP Service Registry</title>
 <meta name="description" content="${escapeHtml((service.description || '').substring(0, 155))}">
-<link rel="canonical" href="https://mcp.rootz.global/static/service/${escapeHtml(service.slug)}.html">
+<link rel="canonical" href="https://mcp.epistery.io/static/service/${escapeHtml(service.slug)}.html">
 <link rel="alternate" type="application/json" href="/api/service/${encodeURIComponent(service.name)}">
 <meta name="robots" content="all">
 <meta property="og:title" content="${escapeHtml(title)} — MCP Service">
@@ -140,7 +140,7 @@ ${service.repository_url ? `<li><a href="${escapeHtml(service.repository_url)}">
 <p class="meta">This profile was extracted from the official MCP registry at registry.modelcontextprotocol.io and enriched with live endpoint probing. The chain is verifiable via <a href="/api/service/${encodeURIComponent(service.name)}">the JSON API</a> which includes an origin leaf hash.</p>
 
 <footer>
-<a href="https://mcp.rootz.global">MCP Service Registry</a> by <a href="https://rootz.global">Rootz</a> ·
+<a href="https://mcp.epistery.io">MCP Service Registry</a> by <a href="https://rootz.global">Rootz</a> ·
 Data from <a href="https://registry.modelcontextprotocol.io">registry.modelcontextprotocol.io</a> ·
 <a href="/.well-known/ai">.well-known/ai</a> ·
 Last updated ${new Date().toISOString().split('T')[0]}
@@ -158,7 +158,7 @@ function categoryHtml(category, services) {
 <meta charset="utf-8">
 <title>${escapeHtml(title)} MCP Services — MCP Service Registry</title>
 <meta name="description" content="${escapeHtml(category.description || '')} — ${services.length} MCP services in this category.">
-<link rel="canonical" href="https://mcp.rootz.global/static/category/${category.slug}.html">
+<link rel="canonical" href="https://mcp.epistery.io/static/category/${category.slug}.html">
 <link rel="alternate" type="application/json" href="/api/services?category=${category.slug}">
 <meta name="robots" content="all">
 <style>${STYLE}</style>
@@ -183,7 +183,7 @@ ${services.map(s => `
 </div>`).join('')}
 
 <footer>
-<a href="https://mcp.rootz.global">MCP Service Registry</a> ·
+<a href="https://mcp.epistery.io">MCP Service Registry</a> ·
 <a href="/.well-known/ai">.well-known/ai</a>
 </footer>
 </body>
@@ -197,7 +197,7 @@ function indexHtml(stats, categories, topServices) {
 <meta charset="utf-8">
 <title>MCP Service Registry — AI-native directory of MCP servers</title>
 <meta name="description" content="AI-readable directory of ${stats.services} MCP (Model Context Protocol) services with tool schemas, live probes, and cryptographic provenance.">
-<link rel="canonical" href="https://mcp.rootz.global/">
+<link rel="canonical" href="https://mcp.epistery.io/">
 <meta name="robots" content="all">
 <style>${STYLE}
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; }

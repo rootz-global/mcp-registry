@@ -71,9 +71,9 @@ function createOriginLeaf(content, parent = null) {
     leaf: leafHash,
     parent: parent,
     timestamp,
-    chain: 'registry.modelcontextprotocol.io → mcp.rootz.global extraction → this response',
-    registry: 'mcp.rootz.global',
-    verify: `https://mcp.rootz.global/api/verify/${leafHash}`,
+    chain: 'registry.modelcontextprotocol.io → mcp.epistery.io extraction → this response',
+    registry: 'mcp.epistery.io',
+    verify: `https://mcp.epistery.io/api/verify/${leafHash}`,
     keep_alive: 'Include this leaf as parent when citing this data',
   };
 }
@@ -87,7 +87,7 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Api-Key');
   res.setHeader('X-Robots-Tag', 'all');
   res.setHeader('Link', '</.well-known/ai>; rel="ai-discovery"; type="application/json"');
-  res.setHeader('X-Registry', 'mcp.rootz.global - AI-native MCP service discovery');
+  res.setHeader('X-Registry', 'mcp.epistery.io - AI-native MCP service discovery');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -101,7 +101,7 @@ function rootJson() {
     registry: 'MCP Service Registry by Rootz',
     description: 'AI-readable directory of MCP (Model Context Protocol) services. Tool schemas, live probes, cryptographic provenance.',
     version: '0.1.0',
-    domain: 'mcp.rootz.global',
+    domain: 'mcp.epistery.io',
     start_here: {
       '1_find_service': 'GET /api/search?q=stripe',
       '2_service_detail': 'GET /api/service/{name}',
@@ -112,7 +112,7 @@ function rootJson() {
     stats,
     origin_parallel: {
       origin: 'origin.rootz.global — SEC data for public companies',
-      mcp_registry: 'mcp.rootz.global — MCP service registry',
+      mcp_registry: 'mcp.epistery.io — MCP service registry',
       pattern: 'Same stack (SQLite + Express + flat HTML + .well-known/ai) — proven at 134K agent queries/week',
     },
     discovery: '.well-known/ai',
@@ -150,10 +150,10 @@ app.get('/', (req, res) => {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>MCP Service Registry — mcp.rootz.global</title>
+<title>MCP Service Registry — mcp.epistery.io</title>
 <meta name="description" content="AI-readable directory of ${stats.services}+ MCP services with tool schemas, live probes, and cryptographic provenance.">
 <link rel="alternate" type="application/json" href="/">
-<link rel="canonical" href="https://mcp.rootz.global/">
+<link rel="canonical" href="https://mcp.epistery.io/">
 <meta name="robots" content="all">
 <style>
   body { font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1a1a1a; }
@@ -191,7 +191,7 @@ ${topCategories.map(c => `<div class="cat"><a href="/api/services?category=${c.s
 </div>
 
 <h2>For AI Agents</h2>
-<p>Connect via MCP: <code>claude mcp add rootz-mcp-registry --transport http https://mcp.rootz.global/mcp</code></p>
+<p>Connect via MCP: <code>claude mcp add rootz-mcp-registry --transport http https://mcp.epistery.io/mcp</code></p>
 <p>Discovery document: <a href="/.well-known/ai">/.well-known/ai</a></p>
 <p>Search: <a href="/api/search?q=stripe">/api/search?q=stripe</a></p>
 
@@ -215,7 +215,7 @@ app.get('/.well-known/ai', (req, res) => {
     '$schema': 'https://rootz.global/schemas/well-known-ai-v1.json',
     service: {
       name: 'MCP Service Registry',
-      domain: 'mcp.rootz.global',
+      domain: 'mcp.epistery.io',
       description: 'AI-readable directory of MCP (Model Context Protocol) services with tool schemas, live probes, and cryptographic provenance.',
       type: 'registry',
       operator: 'Rootz Corp',
@@ -270,7 +270,7 @@ app.get('/.well-known/ai', (req, res) => {
     provenance: {
       signing: 'Every response includes origin leaf hash',
       verify: '/api/verify/{leaf}',
-      chain: 'registry.modelcontextprotocol.io → mcp.rootz.global → agent',
+      chain: 'registry.modelcontextprotocol.io → mcp.epistery.io → agent',
     },
     related_services: {
       origin: {
@@ -510,7 +510,7 @@ Allow: /
 User-agent: PerplexityBot
 Allow: /
 
-Sitemap: https://mcp.rootz.global/sitemap.xml
+Sitemap: https://mcp.epistery.io/sitemap.xml
 `);
 });
 
@@ -521,15 +521,15 @@ app.get('/sitemap.xml', (req, res) => {
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://mcp.rootz.global/</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq></url>
-  <url><loc>https://mcp.rootz.global/.well-known/ai</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq></url>
-  <url><loc>https://mcp.rootz.global/api/categories</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq></url>
+  <url><loc>https://mcp.epistery.io/</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq></url>
+  <url><loc>https://mcp.epistery.io/.well-known/ai</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq></url>
+  <url><loc>https://mcp.epistery.io/api/categories</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq></url>
 `;
   for (const c of categories) {
-    xml += `  <url><loc>https://mcp.rootz.global/static/category/${c.slug}.html</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq></url>\n`;
+    xml += `  <url><loc>https://mcp.epistery.io/static/category/${c.slug}.html</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq></url>\n`;
   }
   for (const s of services) {
-    xml += `  <url><loc>https://mcp.rootz.global/static/service/${s.slug}.html</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq></url>\n`;
+    xml += `  <url><loc>https://mcp.epistery.io/static/service/${s.slug}.html</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq></url>\n`;
   }
   xml += '</urlset>\n';
   res.type('application/xml').send(xml);
