@@ -39,17 +39,17 @@ async function fetchGitHub(path) {
   return resp.json();
 }
 
-const upsert = db.prepare(`
+const UPSERT_SQL = `
   INSERT INTO services (name, slug, title, description, version, website_url, repository_url, repository_source, stars, license, last_pulled, updated_at)
-  VALUES (@name, @slug, @title, @description, @version, @website_url, @repository_url, @repository_source, @stars, @license, datetime('now'), datetime('now'))
-  ON CONFLICT(name) DO UPDATE SET
-    description = COALESCE(excluded.description, description),
-    stars = COALESCE(excluded.stars, stars),
-    license = COALESCE(excluded.license, license),
-    website_url = COALESCE(excluded.website_url, website_url),
-    last_pulled = datetime('now'),
-    updated_at = datetime('now')
-`);
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+  ON DUPLICATE KEY UPDATE
+    description = COALESCE(VALUES(description), description),
+    stars = COALESCE(VALUES(stars), stars),
+    license = COALESCE(VALUES(license), license),
+    website_url = COALESCE(VALUES(website_url), website_url),
+    last_pulled = NOW(),
+    updated_at = NOW()
+`;
 
 async function ingestRepo(ownerRepo) {
   const [owner, repo] = ownerRepo.split('/');
@@ -86,6 +86,7 @@ async function ingestRepo(ownerRepo) {
 }
 
 async function main() {
+  await db.init();
   const file = process.argv[2];
   const dryRun = process.argv.includes('--dry-run');
 
@@ -106,7 +107,7 @@ async function main() {
     const repo = repos[i].trim();
     if (!repo) continue;
 
-    const existing = db.prepare('SELECT id FROM services WHERE repository_url LIKE ?').get(`%${repo}%`);
+    const existing = await db.get('SELECT id FROM services WHERE repository_url LIKE ?', [`%${repo}%`]);
     if (existing) { skipped++; continue; }
 
     try {
@@ -114,7 +115,11 @@ async function main() {
       if (!data) { failed++; continue; }
 
       if (!dryRun) {
-        upsert.run(data);
+        await db.run(UPSERT_SQL, [
+          data.name, data.slug, data.title, data.description, data.version,
+          data.website_url, data.repository_url, data.repository_source,
+          data.stars, data.license,
+        ]);
         added++;
       } else {
         console.log(`  Would add: ${data.name} (${data.stars}★) — ${(data.description || '').substring(0, 80)}`);
@@ -136,7 +141,7 @@ async function main() {
   console.log(`Failed:  ${failed}`);
 
   if (!dryRun) {
-    const total = db.prepare('SELECT COUNT(*) as n FROM services').get();
+    const total = await db.get('SELECT COUNT(*) as n FROM services');
     console.log(`Total services now: ${total.n}`);
   }
 }

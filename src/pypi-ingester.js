@@ -24,49 +24,25 @@ async function rateFetch(url) {
   return resp.json();
 }
 
-const upsert = db.prepare(`
+const UPSERT_SQL = `
   INSERT INTO services (name, slug, title, description, version, website_url, repository_url, repository_source, package_registry, package_name, last_pulled, updated_at)
-  VALUES (@name, @slug, @title, @description, @version, @website_url, @repository_url, @repository_source, 'pypi', @package_name, datetime('now'), datetime('now'))
-  ON CONFLICT(name) DO UPDATE SET
-    description = COALESCE(excluded.description, description),
-    version = COALESCE(excluded.version, version),
-    package_name = COALESCE(excluded.package_name, package_name),
-    package_registry = COALESCE(excluded.package_registry, package_registry),
-    last_pulled = datetime('now'),
-    updated_at = datetime('now')
-`);
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pypi', ?, NOW(), NOW())
+  ON DUPLICATE KEY UPDATE
+    description = COALESCE(VALUES(description), description),
+    version = COALESCE(VALUES(version), version),
+    package_name = COALESCE(VALUES(package_name), package_name),
+    package_registry = COALESCE(VALUES(package_registry), package_registry),
+    last_pulled = NOW(),
+    updated_at = NOW()
+`;
 
 async function main() {
+  await db.init();
   // PyPI doesn't have a great search API for JSON. Use the XML-RPC or simple index.
   // Best approach: search via warehouse API (unofficial but works)
-  const searches = ['mcp-server', 'mcp server', 'model-context-protocol'];
   let totalAdded = 0, totalSkipped = 0;
 
-  for (const query of searches) {
-    console.log(`Searching PyPI: "${query}"`);
-
-    // PyPI search via warehouse JSON API
-    const url = `https://pypi.org/search/?q=${encodeURIComponent(query)}&o=`;
-
-    // PyPI doesn't have a clean JSON search API, but we can use the warehouse API
-    // Alternative: use the XML-RPC search
-    // Actually, let's use the PyPI JSON API for specific packages we know about
-    // from the simple index search we did earlier
-    break; // PyPI search API is limited — let me try a different approach
-  }
-
-  // Better approach: fetch popular MCP packages by name patterns
-  const knownPypiMCP = [
-    'mcp', 'fastmcp', 'mcp-server-fetch', 'mcp-server-git', 'mcp-server-sqlite',
-    'mcp-server-filesystem', 'mcp-server-time', 'mcp-server-memory',
-    'mcp-server-everything', 'mcp-server-sequential-thinking',
-    'mcp-server-brave-search', 'mcp-server-puppeteer',
-    'uvx', 'mcp-server-docker', 'mcp-server-kubernetes',
-    'mcp-server-slack', 'mcp-server-github', 'mcp-server-postgres',
-    'mcp-server-sentry', 'mcp-server-linear', 'mcp-server-notion',
-  ];
-
-  // Also scan for patterns: search pypi simple index for mcp-server-*
+  // Fetch popular MCP packages by name patterns from the simple index
   console.log('Fetching PyPI simple index for mcp packages...');
   const indexResp = await fetch('https://pypi.org/simple/', { headers: { 'Accept': 'text/html' } });
   const indexHtml = await indexResp.text();
@@ -91,8 +67,8 @@ async function main() {
     const pkgName = serverPackages[i];
 
     // Check if already in DB
-    const existing = db.prepare("SELECT id FROM services WHERE package_name = ? OR name = ?")
-      .get(pkgName, `pypi.pkg/${pkgName}`);
+    const existing = await db.get("SELECT id FROM services WHERE package_name = ? OR name = ?",
+      [pkgName, `pypi.pkg/${pkgName}`]);
     if (existing) { totalSkipped++; continue; }
 
     // Fetch package info from PyPI JSON API
@@ -112,17 +88,17 @@ async function main() {
     if (!repoUrl && info.home_page) repoUrl = info.home_page;
 
     try {
-      upsert.run({
+      await db.run(UPSERT_SQL, [
         name,
-        slug: slugify(name),
-        title: info.name || pkgName,
-        description: (info.summary || '').substring(0, 500),
-        version: info.version || null,
-        website_url: info.project_url || info.home_page || null,
-        repository_url: repoUrl && repoUrl.includes('github.com') ? repoUrl : null,
-        repository_source: repoUrl?.includes('github.com') ? 'github' : null,
-        package_name: pkgName,
-      });
+        slugify(name),
+        info.name || pkgName,
+        (info.summary || '').substring(0, 500),
+        info.version || null,
+        info.project_url || info.home_page || null,
+        repoUrl && repoUrl.includes('github.com') ? repoUrl : null,
+        repoUrl?.includes('github.com') ? 'github' : null,
+        pkgName,
+      ]);
       totalAdded++;
     } catch {}
 
@@ -136,7 +112,7 @@ async function main() {
   console.log(`Added:   ${totalAdded}`);
   console.log(`Skipped: ${totalSkipped}`);
 
-  const total = db.prepare('SELECT COUNT(*) as n FROM services').get();
+  const total = await db.get('SELECT COUNT(*) as n FROM services');
   console.log(`Total services: ${total.n}`);
 }
 

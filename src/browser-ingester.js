@@ -4,32 +4,26 @@
  * Adds missing puppeteer/playwright/browser MCP packages from npm to the registry.
  * Run: node src/browser-ingester.js
  */
-import Database from 'better-sqlite3';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const db = new Database(join(__dirname, '..', 'data', 'registry.db'));
-db.pragma('journal_mode = WAL');
+import db from './db.js';
 
 function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').substring(0, 120);
 }
 
-const upsert = db.prepare(`
+const UPSERT_SQL = `
   INSERT INTO services (name, slug, title, description, version, website_url, repository_url, package_registry, package_name, transport_type, last_pulled, updated_at)
-  VALUES (@name, @slug, @title, @description, @version, @website_url, @repository_url, @package_registry, @package_name, @transport_type, datetime('now'), datetime('now'))
-  ON CONFLICT(name) DO UPDATE SET
-    description = COALESCE(excluded.description, description),
-    version = COALESCE(excluded.version, version),
-    website_url = COALESCE(excluded.website_url, website_url),
-    repository_url = COALESCE(excluded.repository_url, repository_url),
-    package_registry = COALESCE(excluded.package_registry, package_registry),
-    package_name = COALESCE(excluded.package_name, package_name),
-    transport_type = COALESCE(excluded.transport_type, transport_type),
-    last_pulled = datetime('now'),
-    updated_at = datetime('now')
-`);
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+  ON DUPLICATE KEY UPDATE
+    description = COALESCE(VALUES(description), description),
+    version = COALESCE(VALUES(version), version),
+    website_url = COALESCE(VALUES(website_url), website_url),
+    repository_url = COALESCE(VALUES(repository_url), repository_url),
+    package_registry = COALESCE(VALUES(package_registry), package_registry),
+    package_name = COALESCE(VALUES(package_name), package_name),
+    transport_type = COALESCE(VALUES(transport_type), transport_type),
+    last_pulled = NOW(),
+    updated_at = NOW()
+`;
 
 // Services discovered from npm, GitHub, and official MCP registry searches
 // that are NOT already in the DB
@@ -180,78 +174,82 @@ const newServices = [
   },
 ];
 
-let added = 0, updated = 0, skipped = 0;
+async function main() {
+  await db.init();
+  let added = 0, updated = 0, skipped = 0;
 
-for (const svc of newServices) {
-  const name = `npm:${svc.package_name}`;
-  const slug = slugify(svc.package_name);
+  for (const svc of newServices) {
+    const name = `npm:${svc.package_name}`;
+    const slug = slugify(svc.package_name);
 
-  // Check if already exists by package_name
-  const existing = db.prepare('SELECT id FROM services WHERE package_name = ? OR name = ?').get(svc.package_name, name);
+    // Check if already exists by package_name
+    const existing = await db.get('SELECT id FROM services WHERE package_name = ? OR name = ?', [svc.package_name, name]);
 
-  try {
-    const result = upsert.run({
-      name,
-      slug,
-      title: svc.title,
-      description: svc.description,
-      version: svc.version,
-      website_url: svc.website_url || null,
-      repository_url: svc.repository_url,
-      package_registry: svc.package_registry,
-      package_name: svc.package_name,
-      transport_type: svc.transport_type,
-    });
-
-    if (existing) {
-      updated++;
-      console.log(`  UPDATED: ${svc.package_name}`);
-    } else {
-      added++;
-      console.log(`  ADDED: ${svc.package_name} → ${name}`);
-    }
-  } catch (err) {
-    // Likely slug conflict — try with suffixed slug
     try {
-      const result = upsert.run({
+      await db.run(UPSERT_SQL, [
         name,
-        slug: slug + '-npm',
-        title: svc.title,
-        description: svc.description,
-        version: svc.version,
-        website_url: svc.website_url || null,
-        repository_url: svc.repository_url,
-        package_registry: svc.package_registry,
-        package_name: svc.package_name,
-        transport_type: svc.transport_type,
-      });
-      added++;
-      console.log(`  ADDED (slug-fix): ${svc.package_name}`);
-    } catch (err2) {
-      skipped++;
-      console.log(`  SKIPPED: ${svc.package_name} — ${err2.message}`);
+        slug,
+        svc.title,
+        svc.description,
+        svc.version,
+        svc.website_url || null,
+        svc.repository_url,
+        svc.package_registry,
+        svc.package_name,
+        svc.transport_type,
+      ]);
+
+      if (existing) {
+        updated++;
+        console.log(`  UPDATED: ${svc.package_name}`);
+      } else {
+        added++;
+        console.log(`  ADDED: ${svc.package_name} → ${name}`);
+      }
+    } catch (err) {
+      // Likely slug conflict — try with suffixed slug
+      try {
+        await db.run(UPSERT_SQL, [
+          name,
+          slug + '-npm',
+          svc.title,
+          svc.description,
+          svc.version,
+          svc.website_url || null,
+          svc.repository_url,
+          svc.package_registry,
+          svc.package_name,
+          svc.transport_type,
+        ]);
+        added++;
+        console.log(`  ADDED (slug-fix): ${svc.package_name}`);
+      } catch (err2) {
+        skipped++;
+        console.log(`  SKIPPED: ${svc.package_name} — ${err2.message}`);
+      }
     }
   }
+
+  // Now get the final count of browser-related services
+  const count = await db.get(`
+    SELECT count(*) as c FROM services
+    WHERE description LIKE '%puppeteer%' OR description LIKE '%playwright%'
+       OR description LIKE '%browser%' OR description LIKE '%headless%'
+       OR description LIKE '%scrape%' OR description LIKE '%crawl%'
+       OR description LIKE '%selenium%' OR description LIKE '%chromium%'
+       OR name LIKE '%puppeteer%' OR name LIKE '%playwright%'
+       OR name LIKE '%browser%' OR name LIKE '%headless%'
+       OR name LIKE '%scrape%' OR name LIKE '%crawl%' OR name LIKE '%selenium%'
+  `);
+
+  const total = await db.get('SELECT count(*) as c FROM services');
+
+  console.log(`\n--- Summary ---`);
+  console.log(`Added: ${added}`);
+  console.log(`Updated: ${updated}`);
+  console.log(`Skipped: ${skipped}`);
+  console.log(`Browser-related services total: ${count.c}`);
+  console.log(`Registry total: ${total.c}`);
 }
 
-// Now get the final count of browser-related services
-const count = db.prepare(`
-  SELECT count(*) as c FROM services
-  WHERE description LIKE '%puppeteer%' OR description LIKE '%playwright%'
-     OR description LIKE '%browser%' OR description LIKE '%headless%'
-     OR description LIKE '%scrape%' OR description LIKE '%crawl%'
-     OR description LIKE '%selenium%' OR description LIKE '%chromium%'
-     OR name LIKE '%puppeteer%' OR name LIKE '%playwright%'
-     OR name LIKE '%browser%' OR name LIKE '%headless%'
-     OR name LIKE '%scrape%' OR name LIKE '%crawl%' OR name LIKE '%selenium%'
-`).get();
-
-const total = db.prepare('SELECT count(*) as c FROM services').get();
-
-console.log(`\n--- Summary ---`);
-console.log(`Added: ${added}`);
-console.log(`Updated: ${updated}`);
-console.log(`Skipped: ${skipped}`);
-console.log(`Browser-related services total: ${count.c}`);
-console.log(`Registry total: ${total.c}`);
-db.close();
+main().catch(e => { console.error('Fatal:', e); process.exit(1); });

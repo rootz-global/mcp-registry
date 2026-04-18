@@ -130,7 +130,7 @@ function extractServerData(entry) {
   };
 }
 
-const upsertStmt = db.prepare(`
+const UPSERT_SQL = `
   INSERT INTO services (
     name, slug, title, description, version,
     website_url, repository_url, repository_source, repository_subfolder,
@@ -139,35 +139,46 @@ const upsertStmt = db.prepare(`
     registry_status, registry_published_at, registry_updated_at,
     last_pulled, updated_at
   ) VALUES (
-    @name, @slug, @title, @description, @version,
-    @website_url, @repository_url, @repository_source, @repository_subfolder,
-    @mcp_endpoint, @transport_type, @package_registry, @package_name,
-    @env_vars, @icon_url, @auth_required,
-    @registry_status, @registry_published_at, @registry_updated_at,
-    datetime('now'), datetime('now')
+    ?, ?, ?, ?, ?,
+    ?, ?, ?, ?,
+    ?, ?, ?, ?,
+    ?, ?, ?,
+    ?, ?, ?,
+    NOW(), NOW()
   )
-  ON CONFLICT(name) DO UPDATE SET
-    title = excluded.title,
-    description = excluded.description,
-    version = excluded.version,
-    website_url = excluded.website_url,
-    repository_url = excluded.repository_url,
-    repository_source = excluded.repository_source,
-    repository_subfolder = excluded.repository_subfolder,
-    mcp_endpoint = excluded.mcp_endpoint,
-    transport_type = excluded.transport_type,
-    package_registry = excluded.package_registry,
-    package_name = excluded.package_name,
-    env_vars = excluded.env_vars,
-    icon_url = excluded.icon_url,
-    auth_required = excluded.auth_required,
-    registry_status = excluded.registry_status,
-    registry_updated_at = excluded.registry_updated_at,
-    last_pulled = datetime('now'),
-    updated_at = datetime('now')
-`);
+  ON DUPLICATE KEY UPDATE
+    title = VALUES(title),
+    description = VALUES(description),
+    version = VALUES(version),
+    website_url = VALUES(website_url),
+    repository_url = VALUES(repository_url),
+    repository_source = VALUES(repository_source),
+    repository_subfolder = VALUES(repository_subfolder),
+    mcp_endpoint = VALUES(mcp_endpoint),
+    transport_type = VALUES(transport_type),
+    package_registry = VALUES(package_registry),
+    package_name = VALUES(package_name),
+    env_vars = VALUES(env_vars),
+    icon_url = VALUES(icon_url),
+    auth_required = VALUES(auth_required),
+    registry_status = VALUES(registry_status),
+    registry_updated_at = VALUES(registry_updated_at),
+    last_pulled = NOW(),
+    updated_at = NOW()
+`;
+
+async function upsertRow(conn, row) {
+  await conn.execute(UPSERT_SQL, [
+    row.name, row.slug, row.title, row.description, row.version,
+    row.website_url, row.repository_url, row.repository_source, row.repository_subfolder,
+    row.mcp_endpoint, row.transport_type, row.package_registry, row.package_name,
+    row.env_vars, row.icon_url, row.auth_required,
+    row.registry_status, row.registry_published_at, row.registry_updated_at,
+  ]);
+}
 
 async function pullAll(maxPages = Infinity) {
+  await db.init();
   let cursor = null;
   let page = 0;
   let totalFetched = 0;
@@ -190,20 +201,28 @@ async function pullAll(maxPages = Infinity) {
       const servers = data.servers || [];
       totalFetched += servers.length;
 
-      const insertMany = db.transaction((rows) => {
+      const rows = servers.map(extractServerData).filter(Boolean);
+
+      // Transaction per page
+      const conn = await db.pool.getConnection();
+      try {
+        await conn.beginTransaction();
         for (const row of rows) {
           try {
-            upsertStmt.run(row);
+            await upsertRow(conn, row);
             totalInserted++;
           } catch (e) {
             errors++;
             console.log(`\n  error on ${row.name}: ${e.message}`);
           }
         }
-      });
-
-      const rows = servers.map(extractServerData).filter(Boolean);
-      insertMany(rows);
+        await conn.commit();
+      } catch (e) {
+        await conn.rollback();
+        throw e;
+      } finally {
+        conn.release();
+      }
 
       console.log(`${servers.length} servers (total: ${totalInserted})`);
 
@@ -226,9 +245,9 @@ async function pullAll(maxPages = Infinity) {
   console.log(`Errors:    ${errors}`);
 
   // Final stats
-  const stats = db.prepare('SELECT COUNT(*) as n FROM services').get();
-  const withRepo = db.prepare('SELECT COUNT(*) as n FROM services WHERE repository_url IS NOT NULL').get();
-  const withRemote = db.prepare('SELECT COUNT(*) as n FROM services WHERE mcp_endpoint IS NOT NULL').get();
+  const stats = await db.get('SELECT COUNT(*) as n FROM services');
+  const withRepo = await db.get('SELECT COUNT(*) as n FROM services WHERE repository_url IS NOT NULL');
+  const withRemote = await db.get('SELECT COUNT(*) as n FROM services WHERE mcp_endpoint IS NOT NULL');
   console.log(`\nIn database:       ${stats.n} services`);
   console.log(`With repo:         ${withRepo.n}`);
   console.log(`With MCP endpoint: ${withRemote.n}`);

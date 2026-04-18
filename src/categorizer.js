@@ -114,9 +114,6 @@ function scoreText(text, keywords) {
 }
 
 function categorize(service) {
-  // Don't use name/repo_url/package_name for keyword matching —
-  // they often contain 'github' or 'npm' as namespace artifacts, not semantic signals.
-  // Focus on the human-written title + description.
   const text = [
     service.title || '',
     service.description || '',
@@ -135,48 +132,55 @@ function categorize(service) {
   return { primary, all: allMatches };
 }
 
-function run() {
+async function run() {
+  await db.init();
   const recat = process.argv.includes('--recat');
 
   if (recat) {
     console.log('Clearing existing categorizations...');
-    db.prepare('DELETE FROM service_categories').run();
-    db.prepare('UPDATE services SET category = NULL').run();
+    await db.run('DELETE FROM service_categories');
+    await db.run('UPDATE services SET category = NULL');
   }
 
-  const services = db.prepare('SELECT id, name, title, description, package_name, repository_url FROM services').all();
+  const services = await db.all('SELECT id, name, title, description, package_name, repository_url FROM services');
   console.log(`Categorizing ${services.length} services...`);
 
-  const updateService = db.prepare('UPDATE services SET category = ? WHERE id = ?');
-  const insertMapping = db.prepare(`
-    INSERT OR IGNORE INTO service_categories (service_id, category_id, is_primary, score)
-    VALUES (?, ?, ?, ?)
-  `);
-  const getCategoryId = db.prepare('SELECT id FROM categories WHERE slug = ?');
-
   const stats = {};
-  const txn = db.transaction((svcs) => {
-    for (const svc of svcs) {
+
+  // Transaction for bulk updates
+  const conn = await db.pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    for (const svc of services) {
       const { primary, all } = categorize(svc);
-      updateService.run(primary, svc.id);
+      await conn.execute('UPDATE services SET category = ? WHERE id = ?', [primary, svc.id]);
       stats[primary] = (stats[primary] || 0) + 1;
 
       for (const [cat, score] of all) {
-        const catRow = getCategoryId.get(cat);
+        const [catRows] = await conn.execute('SELECT id FROM categories WHERE slug = ?', [cat]);
+        const catRow = catRows[0];
         if (catRow) {
-          insertMapping.run(svc.id, catRow.id, cat === primary ? 1 : 0, score);
+          await conn.execute(
+            'INSERT IGNORE INTO service_categories (service_id, category_id, is_primary, score) VALUES (?, ?, ?, ?)',
+            [svc.id, catRow.id, cat === primary ? 1 : 0, score]
+          );
         }
       }
     }
-  });
-  txn(services);
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
 
   // Update category service counts
-  db.prepare(`
+  await db.run(`
     UPDATE categories SET service_count = (
       SELECT COUNT(*) FROM services WHERE category = categories.slug
     )
-  `).run();
+  `);
 
   console.log('\n=== Categorization Complete ===');
   const sorted = Object.entries(stats).sort((a, b) => b[1] - a[1]);
@@ -186,4 +190,7 @@ function run() {
   console.log(`\nTotal: ${services.length}`);
 }
 
-run();
+run().catch(e => {
+  console.error('Fatal:', e);
+  process.exit(1);
+});

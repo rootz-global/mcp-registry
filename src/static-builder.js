@@ -234,7 +234,8 @@ ${topServices.map(s => `<div class="tool"><a href="/static/service/${escapeHtml(
 </html>`;
 }
 
-function run() {
+async function run() {
+  await db.init();
   const args = process.argv.slice(2);
   const serviceArg = args.includes('--service') ? args[args.indexOf('--service') + 1] : null;
   const catOnly = args.includes('--category');
@@ -245,14 +246,14 @@ function run() {
   if (!catOnly) {
     let services;
     if (serviceArg) {
-      services = db.prepare('SELECT * FROM services WHERE name = ? OR slug = ?').all(serviceArg, serviceArg);
+      services = await db.all('SELECT * FROM services WHERE name = ? OR slug = ?', [serviceArg, serviceArg]);
     } else {
-      services = db.prepare('SELECT * FROM services WHERE slug IS NOT NULL').all();
+      services = await db.all('SELECT * FROM services WHERE slug IS NOT NULL');
     }
 
     console.log(`Building ${services.length} service pages...`);
     for (const svc of services) {
-      const tools = db.prepare('SELECT name, description, input_schema FROM tools WHERE service_id = ?').all(svc.id);
+      const tools = await db.all('SELECT name, description, input_schema FROM tools WHERE service_id = ?', [svc.id]);
       const html = serviceHtml(svc, tools);
       writeFileSync(join(SERVICE_DIR, `${svc.slug}.html`), html);
       servicesBuilt++;
@@ -260,10 +261,10 @@ function run() {
     }
   }
 
-  const categories = db.prepare('SELECT * FROM categories WHERE service_count > 0').all();
+  const categories = await db.all('SELECT * FROM categories WHERE service_count > 0');
   console.log(`\nBuilding ${categories.length} category pages...`);
   for (const cat of categories) {
-    const services = db.prepare('SELECT name, slug, title, description, tools_count, probe_status FROM services WHERE category = ? ORDER BY tools_count DESC, title LIMIT 500').all(cat.slug);
+    const services = await db.all('SELECT name, slug, title, description, tools_count, probe_status FROM services WHERE category = ? ORDER BY tools_count DESC, title LIMIT 500', [cat.slug]);
     const html = categoryHtml(cat, services);
     writeFileSync(join(CATEGORY_DIR, `${cat.slug}.html`), html);
     categoriesBuilt++;
@@ -271,12 +272,12 @@ function run() {
 
   // Index page
   const stats = {
-    services: db.prepare('SELECT COUNT(*) as n FROM services').get().n,
-    total_tools: db.prepare('SELECT COUNT(*) as n FROM tools').get().n,
-    reachable: db.prepare("SELECT COUNT(*) as n FROM services WHERE probe_status = 'reachable'").get().n,
+    services: (await db.get('SELECT COUNT(*) as n FROM services')).n,
+    total_tools: (await db.get('SELECT COUNT(*) as n FROM tools')).n,
+    reachable: (await db.get("SELECT COUNT(*) as n FROM services WHERE probe_status = 'reachable'")).n,
     categories: categories.length,
   };
-  const topServices = db.prepare('SELECT name, slug, title, description, tools_count FROM services WHERE tools_count > 0 ORDER BY tools_count DESC LIMIT 20').all();
+  const topServices = await db.all('SELECT name, slug, title, description, tools_count FROM services WHERE tools_count > 0 ORDER BY tools_count DESC LIMIT 20');
   writeFileSync(join(STATIC_DIR, 'index.html'), indexHtml(stats, categories, topServices));
 
   console.log(`\n=== Build Complete ===`);
@@ -286,4 +287,7 @@ function run() {
   console.log(`  Output:         ${STATIC_DIR}`);
 }
 
-run();
+run().catch(e => {
+  console.error('Fatal:', e);
+  process.exit(1);
+});

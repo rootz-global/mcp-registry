@@ -46,19 +46,19 @@ function isLikelyMCPServer(pkg) {
   return hasServer && !isExcluded;
 }
 
-const upsert = db.prepare(`
+const UPSERT_SQL = `
   INSERT INTO services (name, slug, title, description, version, website_url, repository_url, repository_source, package_registry, package_name, last_pulled, updated_at)
-  VALUES (@name, @slug, @title, @description, @version, @website_url, @repository_url, @repository_source, 'npm', @package_name, datetime('now'), datetime('now'))
-  ON CONFLICT(name) DO UPDATE SET
-    description = COALESCE(excluded.description, description),
-    version = COALESCE(excluded.version, version),
-    website_url = COALESCE(excluded.website_url, website_url),
-    repository_url = COALESCE(excluded.repository_url, repository_url),
-    package_name = COALESCE(excluded.package_name, package_name),
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'npm', ?, NOW(), NOW())
+  ON DUPLICATE KEY UPDATE
+    description = COALESCE(VALUES(description), description),
+    version = COALESCE(VALUES(version), version),
+    website_url = COALESCE(VALUES(website_url), website_url),
+    repository_url = COALESCE(VALUES(repository_url), repository_url),
+    package_name = COALESCE(VALUES(package_name), package_name),
     package_registry = 'npm',
-    last_pulled = datetime('now'),
-    updated_at = datetime('now')
-`);
+    last_pulled = NOW(),
+    updated_at = NOW()
+`;
 
 async function searchAndIngest(query, maxPages = 10) {
   let offset = 0;
@@ -89,24 +89,23 @@ async function searchAndIngest(query, maxPages = 10) {
         }
 
         // Check if already exists (by npm package name)
-        const existing = db.prepare('SELECT id FROM services WHERE package_name = ?').get(pkg.name);
+        const existing = await db.get('SELECT id FROM services WHERE package_name = ?', [pkg.name]);
         if (existing) { totalSkipped++; continue; }
 
         // Also check by repo URL
         const repoUrl = pkg.links?.repository || null;
         if (repoUrl) {
-          const existingRepo = db.prepare('SELECT id FROM services WHERE repository_url = ?').get(repoUrl);
+          const existingRepo = await db.get('SELECT id FROM services WHERE repository_url = ?', [repoUrl]);
           if (existingRepo) {
             // Update existing entry with npm package info
-            db.prepare('UPDATE services SET package_registry = ?, package_name = ? WHERE repository_url = ?')
-              .run('npm', pkg.name, repoUrl);
+            await db.run('UPDATE services SET package_registry = ?, package_name = ? WHERE repository_url = ?',
+              ['npm', pkg.name, repoUrl]);
             totalSkipped++;
             continue;
           }
         }
 
         // Build a registry-style name from npm package name
-        // @scope/name → npm.scope/name, unscoped → npm.pkg/name
         let name;
         if (pkg.name.startsWith('@')) {
           const [scope, pkgName] = pkg.name.substring(1).split('/');
@@ -116,17 +115,17 @@ async function searchAndIngest(query, maxPages = 10) {
         }
 
         try {
-          upsert.run({
+          await db.run(UPSERT_SQL, [
             name,
-            slug: slugify(name),
-            title: pkg.name,
-            description: pkg.description || '',
-            version: pkg.version || null,
-            website_url: pkg.links?.homepage || null,
-            repository_url: repoUrl,
-            repository_source: repoUrl?.includes('github.com') ? 'github' : null,
-            package_name: pkg.name,
-          });
+            slugify(name),
+            pkg.name,
+            pkg.description || '',
+            pkg.version || null,
+            pkg.links?.homepage || null,
+            repoUrl,
+            repoUrl?.includes('github.com') ? 'github' : null,
+            pkg.name,
+          ]);
           totalAdded++;
         } catch (e) {
           // Duplicate name — skip
@@ -145,6 +144,7 @@ async function searchAndIngest(query, maxPages = 10) {
 }
 
 async function main() {
+  await db.init();
   const arg = process.argv[2] || '--all';
 
   const searches = arg === '--all'
@@ -166,8 +166,8 @@ async function main() {
   console.log(`Skipped:  ${grandTotal.skipped} (already in DB)`);
   console.log(`Filtered: ${grandTotal.filtered} (not MCP servers)`);
 
-  const total = db.prepare('SELECT COUNT(*) as n FROM services').get();
-  const npmCount = db.prepare("SELECT COUNT(*) as n FROM services WHERE package_registry = 'npm'").get();
+  const total = await db.get('SELECT COUNT(*) as n FROM services');
+  const npmCount = await db.get("SELECT COUNT(*) as n FROM services WHERE package_registry = 'npm'");
   console.log(`\nTotal services: ${total.n}`);
   console.log(`With npm package: ${npmCount.n}`);
 }

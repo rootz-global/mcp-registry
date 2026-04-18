@@ -6,3 +6,4 @@ data/static/
 data/new_repos.txt
 .env
 *.log
+.idea
