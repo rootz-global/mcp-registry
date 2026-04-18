@@ -537,6 +537,11 @@ app.get('/sitemap.xml', (req, res) => {
 
 // ============================================================
 // Static HTML serving
+// Google Search Console verification
+app.get('/googlead5922a13359c897.html', (req, res) => {
+  res.sendFile(join(__dirname, '..', 'googlead5922a13359c897.html'));
+});
+
 // ============================================================
 app.use('/static', express.static(STATIC_DIR, {
   extensions: ['html'],
