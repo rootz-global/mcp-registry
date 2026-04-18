@@ -1,0 +1,8 @@
+node_modules/
+data/registry.db
+data/registry.db-wal
+data/registry.db-shm
+data/static/
+data/new_repos.txt
+.env
+*.log

@@ -1,0 +1,22 @@
+{
+  "name": "@rootz/mcp-registry",
+  "version": "0.1.0",
+  "description": "MCP Service Registry — AI-readable directory of MCP servers with tool schemas",
+  "type": "module",
+  "scripts": {
+    "pull": "node src/puller.js",
+    "pull:all": "node src/puller.js all",
+    "categorize": "node src/categorizer.js",
+    "extract": "node src/git-extractor.js",
+    "extract:top": "node src/git-extractor.js --top 200",
+    "probe": "node src/prober.js",
+    "build": "node src/static-builder.js",
+    "serve": "node src/server.js",
+    "stats": "node src/stats.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "dotenv": "^17.4.1",
+    "express": "^4.21.0"
+  }
+}
