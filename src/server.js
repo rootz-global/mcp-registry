@@ -549,20 +549,40 @@ app.use('/static', express.static(STATIC_DIR, {
 }));
 
 // ============================================================
+// Health endpoint
+// ============================================================
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'mcp-registry', pid: process.pid });
+});
+
+// ============================================================
 // Start
 // ============================================================
+const UPSTREAM = process.env.UPSTREAM === '1' || process.env.UPSTREAM === 'true';
+let server;
+
 async function start() {
   await db.init();
   const stats = await getStats();
-  app.listen(PORT, () => {
+  server = app.listen(PORT, () => {
     console.log(`MCP Service Registry`);
     console.log(`  Port:     ${PORT}`);
+    if (UPSTREAM) console.log(`  Mode:     UPSTREAM (TLS terminated by harness)`);
     console.log(`  Services: ${stats.services}`);
     console.log(`  Tools:    ${stats.total_tools}`);
     console.log(`  Reachable: ${stats.reachable}`);
     console.log(`  URL:      http://localhost:${PORT}/`);
   });
 }
+
+async function shutdown(signal) {
+  console.log(`[mcp-registry] ${signal} received, shutting down...`);
+  if (server) await new Promise(resolve => server.close(resolve));
+  await db.pool.end();
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 start().catch(e => {
   console.error('Server start failed:', e);
