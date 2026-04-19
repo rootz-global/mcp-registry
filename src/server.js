@@ -301,18 +301,18 @@ app.get('/api/search', async (req, res) => {
     sql = `SELECT id, name, slug, title, description, category, tools_count, probe_status, stars
            FROM services
            WHERE category = ? AND (title LIKE ? OR description LIKE ? OR name LIKE ?)
-           ORDER BY tools_count DESC, stars DESC LIMIT ?`;
-    params = [category, `%${q}%`, `%${q}%`, `%${q}%`, limit];
+           ORDER BY tools_count DESC, stars DESC LIMIT ${limit}`;
+    params = [category, `%${q}%`, `%${q}%`, `%${q}%`];
   } else if (category) {
     sql = `SELECT id, name, slug, title, description, category, tools_count, probe_status, stars
-           FROM services WHERE category = ? ORDER BY tools_count DESC, stars DESC LIMIT ?`;
-    params = [category, limit];
+           FROM services WHERE category = ? ORDER BY tools_count DESC, stars DESC LIMIT ${limit}`;
+    params = [category];
   } else {
     sql = `SELECT id, name, slug, title, description, category, tools_count, probe_status, stars
            FROM services
            WHERE title LIKE ? OR description LIKE ? OR name LIKE ?
-           ORDER BY tools_count DESC, stars DESC LIMIT ?`;
-    params = [`%${q}%`, `%${q}%`, `%${q}%`, limit];
+           ORDER BY tools_count DESC, stars DESC LIMIT ${limit}`;
+    params = [`%${q}%`, `%${q}%`, `%${q}%`];
   }
 
   const rows = await db.all(sql, params);
