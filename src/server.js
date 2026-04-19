@@ -5,7 +5,6 @@
  *
  * Port: 3500 (Origin uses 3400)
  */
-import 'dotenv/config';
 import express from 'express';
 import { createHash } from 'crypto';
 import { dirname, join } from 'path';
@@ -47,13 +46,13 @@ function identifyAgent(req) {
   return { agentType, agentId };
 }
 
-function logAccess(req, serviceName, tokens) {
+async function logAccess(req, serviceName, tokens) {
   const { agentType, agentId } = identifyAgent(req);
   try {
-    db.prepare(`
+    await db.run(`
       INSERT INTO agent_access_log (agent_id, agent_type, endpoint, query_params, service_requested, response_tokens, ip_address)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(agentId, agentType, req.path, JSON.stringify(req.query), serviceName, tokens, req.ip);
+    `, [agentId, agentType, req.path, JSON.stringify(req.query), serviceName, tokens, req.ip]);
   } catch {}
 }
 
@@ -95,8 +94,8 @@ app.use((req, res, next) => {
 // ============================================================
 // Root — content negotiation
 // ============================================================
-function rootJson() {
-  const stats = getStats();
+async function rootJson() {
+  const stats = await getStats();
   return {
     registry: 'MCP Service Registry by Rootz',
     description: 'AI-readable directory of MCP (Model Context Protocol) services. Tool schemas, live probes, cryptographic provenance.',
@@ -113,7 +112,7 @@ function rootJson() {
     origin_parallel: {
       origin: 'origin.rootz.global — SEC data for public companies',
       mcp_registry: 'mcp.epistery.io — MCP service registry',
-      pattern: 'Same stack (SQLite + Express + flat HTML + .well-known/ai) — proven at 134K agent queries/week',
+      pattern: 'Same stack (MySQL + Express + flat HTML + .well-known/ai) — proven at 134K agent queries/week',
     },
     discovery: '.well-known/ai',
     license: 'CC-BY-SA-4.0 + commercial validation required',
@@ -121,30 +120,30 @@ function rootJson() {
   };
 }
 
-function getStats() {
+async function getStats() {
   return {
-    services: db.prepare('SELECT COUNT(*) as n FROM services').get().n,
-    with_tools: db.prepare('SELECT COUNT(*) as n FROM services WHERE tools_count > 0').get().n,
-    total_tools: db.prepare('SELECT COUNT(*) as n FROM tools').get().n,
-    with_repo: db.prepare('SELECT COUNT(*) as n FROM services WHERE repository_url IS NOT NULL').get().n,
-    with_endpoint: db.prepare('SELECT COUNT(*) as n FROM services WHERE mcp_endpoint IS NOT NULL').get().n,
-    reachable: db.prepare("SELECT COUNT(*) as n FROM services WHERE probe_status = 'reachable'").get().n,
-    categories: db.prepare('SELECT COUNT(*) as n FROM categories WHERE service_count > 0').get().n,
+    services: (await db.get('SELECT COUNT(*) as n FROM services')).n,
+    with_tools: (await db.get('SELECT COUNT(*) as n FROM services WHERE tools_count > 0')).n,
+    total_tools: (await db.get('SELECT COUNT(*) as n FROM tools')).n,
+    with_repo: (await db.get('SELECT COUNT(*) as n FROM services WHERE repository_url IS NOT NULL')).n,
+    with_endpoint: (await db.get('SELECT COUNT(*) as n FROM services WHERE mcp_endpoint IS NOT NULL')).n,
+    reachable: (await db.get("SELECT COUNT(*) as n FROM services WHERE probe_status = 'reachable'")).n,
+    categories: (await db.get('SELECT COUNT(*) as n FROM categories WHERE service_count > 0')).n,
   };
 }
 
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
   logAccess(req, null, 200);
   const { agentType } = identifyAgent(req);
   const accept = req.headers.accept || '';
 
   if (accept.includes('application/json') || agentType === 'script') {
-    return res.json(rootJson());
+    return res.json(await rootJson());
   }
 
   // HTML for browsers and crawlers
-  const stats = getStats();
-  const topCategories = db.prepare('SELECT slug, name, service_count FROM categories WHERE service_count > 0 ORDER BY service_count DESC LIMIT 10').all();
+  const stats = await getStats();
+  const topCategories = await db.all('SELECT slug, name, service_count FROM categories WHERE service_count > 0 ORDER BY service_count DESC LIMIT 10');
 
   res.type('html').send(`<!DOCTYPE html>
 <html lang="en">
@@ -208,9 +207,9 @@ ${topCategories.map(c => `<div class="cat"><a href="/api/services?category=${c.s
 // ============================================================
 // /.well-known/ai — the machine-readable discovery document
 // ============================================================
-app.get('/.well-known/ai', (req, res) => {
+app.get('/.well-known/ai', async (req, res) => {
   logAccess(req, null, 300);
-  const stats = getStats();
+  const stats = await getStats();
   res.json({
     '$schema': 'https://rootz.global/schemas/well-known-ai-v1.json',
     service: {
@@ -284,7 +283,7 @@ app.get('/.well-known/ai', (req, res) => {
 // ============================================================
 // GET /api/search — find services by query
 // ============================================================
-app.get('/api/search', (req, res) => {
+app.get('/api/search', async (req, res) => {
   const q = (req.query.q || '').trim();
   const category = req.query.category || null;
   const limit = Math.min(parseInt(req.query.limit) || 20, 100);
@@ -302,21 +301,21 @@ app.get('/api/search', (req, res) => {
     sql = `SELECT id, name, slug, title, description, category, tools_count, probe_status, stars
            FROM services
            WHERE category = ? AND (title LIKE ? OR description LIKE ? OR name LIKE ?)
-           ORDER BY tools_count DESC, stars DESC LIMIT ?`;
-    params = [category, `%${q}%`, `%${q}%`, `%${q}%`, limit];
+           ORDER BY tools_count DESC, stars DESC LIMIT ${limit}`;
+    params = [category, `%${q}%`, `%${q}%`, `%${q}%`];
   } else if (category) {
     sql = `SELECT id, name, slug, title, description, category, tools_count, probe_status, stars
-           FROM services WHERE category = ? ORDER BY tools_count DESC, stars DESC LIMIT ?`;
-    params = [category, limit];
+           FROM services WHERE category = ? ORDER BY tools_count DESC, stars DESC LIMIT ${limit}`;
+    params = [category];
   } else {
     sql = `SELECT id, name, slug, title, description, category, tools_count, probe_status, stars
            FROM services
            WHERE title LIKE ? OR description LIKE ? OR name LIKE ?
-           ORDER BY tools_count DESC, stars DESC LIMIT ?`;
-    params = [`%${q}%`, `%${q}%`, `%${q}%`, limit];
+           ORDER BY tools_count DESC, stars DESC LIMIT ${limit}`;
+    params = [`%${q}%`, `%${q}%`, `%${q}%`];
   }
 
-  const rows = db.prepare(sql).all(...params);
+  const rows = await db.all(sql, params);
   res.json({
     query: { q, category, limit },
     count: rows.length,
@@ -336,9 +335,9 @@ app.get('/api/search', (req, res) => {
 // ============================================================
 // GET /api/service/:name — service profile with tools
 // ============================================================
-app.get('/api/service/:name(*)', (req, res) => {
+app.get('/api/service/:name(*)', async (req, res) => {
   const name = req.params.name;
-  const service = db.prepare('SELECT * FROM services WHERE name = ? OR slug = ?').get(name, name);
+  const service = await db.get('SELECT * FROM services WHERE name = ? OR slug = ?', [name, name]);
   if (!service) {
     logAccess(req, name, 100);
     return res.status(404).json({ error: 'Service not found', name });
@@ -346,8 +345,8 @@ app.get('/api/service/:name(*)', (req, res) => {
 
   logAccess(req, service.name, 800);
 
-  const tools = db.prepare('SELECT name, description, input_schema, source FROM tools WHERE service_id = ?').all(service.id);
-  const recentProbe = db.prepare('SELECT * FROM probes WHERE service_id = ? ORDER BY probed_at DESC LIMIT 1').get(service.id);
+  const tools = await db.all('SELECT name, description, input_schema, source FROM tools WHERE service_id = ?', [service.id]);
+  const recentProbe = await db.get('SELECT * FROM probes WHERE service_id = ? ORDER BY probed_at DESC LIMIT 1', [service.id]);
 
   res.json({
     name: service.name,
@@ -387,23 +386,23 @@ app.get('/api/service/:name(*)', (req, res) => {
 // ============================================================
 // GET /api/tool/:name — find which services offer this tool
 // ============================================================
-app.get('/api/tool/:name', (req, res) => {
+app.get('/api/tool/:name', async (req, res) => {
   const name = req.params.name;
   logAccess(req, null, 400);
 
-  const exact = db.prepare(`
+  const exact = await db.all(`
     SELECT s.name, s.title, s.description, s.category, s.mcp_endpoint, t.description as tool_description
     FROM tools t JOIN services s ON t.service_id = s.id
     WHERE t.name = ?
     ORDER BY s.tools_count DESC
-  `).all(name);
+  `, [name]);
 
-  const fuzzy = db.prepare(`
+  const fuzzy = await db.all(`
     SELECT s.name, s.title, s.description, s.category, s.mcp_endpoint, t.name as tool_name, t.description as tool_description
     FROM tools t JOIN services s ON t.service_id = s.id
     WHERE t.name LIKE ? AND t.name != ?
     ORDER BY s.tools_count DESC LIMIT 20
-  `).all(`%${name}%`, name);
+  `, [`%${name}%`, name]);
 
   res.json({
     query: name,
@@ -418,9 +417,9 @@ app.get('/api/tool/:name', (req, res) => {
 // ============================================================
 // GET /api/categories
 // ============================================================
-app.get('/api/categories', (req, res) => {
+app.get('/api/categories', async (req, res) => {
   logAccess(req, null, 300);
-  const cats = db.prepare('SELECT slug, name, description, service_count FROM categories WHERE service_count > 0 ORDER BY service_count DESC').all();
+  const cats = await db.all('SELECT slug, name, description, service_count FROM categories WHERE service_count > 0 ORDER BY service_count DESC');
   res.json({
     count: cats.length,
     categories: cats.map(c => ({
@@ -433,7 +432,7 @@ app.get('/api/categories', (req, res) => {
 // ============================================================
 // GET /api/services — list with optional filter
 // ============================================================
-app.get('/api/services', (req, res) => {
+app.get('/api/services', async (req, res) => {
   const category = req.query.category;
   const limit = Math.min(parseInt(req.query.limit) || 50, 200);
   const offset = parseInt(req.query.offset) || 0;
@@ -442,16 +441,17 @@ app.get('/api/services', (req, res) => {
   const where = category ? 'WHERE category = ?' : '';
   const params = category ? [category, limit, offset] : [limit, offset];
 
-  const rows = db.prepare(`
+  const rows = await db.all(`
     SELECT name, slug, title, description, category, tools_count, probe_status
     FROM services ${where}
     ORDER BY tools_count DESC, stars DESC
     LIMIT ? OFFSET ?
-  `).all(...params);
+  `, params);
 
-  const total = category
-    ? db.prepare('SELECT COUNT(*) as n FROM services WHERE category = ?').get(category).n
-    : db.prepare('SELECT COUNT(*) as n FROM services').get().n;
+  const totalRow = category
+    ? await db.get('SELECT COUNT(*) as n FROM services WHERE category = ?', [category])
+    : await db.get('SELECT COUNT(*) as n FROM services');
+  const total = totalRow.n;
 
   res.json({
     category: category || null,
@@ -465,15 +465,15 @@ app.get('/api/services', (req, res) => {
 // ============================================================
 // GET /api/stats
 // ============================================================
-app.get('/api/stats', (req, res) => {
+app.get('/api/stats', async (req, res) => {
   logAccess(req, null, 200);
-  res.json(getStats());
+  res.json(await getStats());
 });
 
 // ============================================================
 // MCP endpoint — native AI discovery
 // ============================================================
-app.post('/mcp', (req, res) => {
+app.post('/mcp', async (req, res) => {
   const request = req.body;
   if (!request || !request.method) {
     return res.status(400).json({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid request' } });
@@ -485,7 +485,7 @@ app.post('/mcp', (req, res) => {
   req.query = { mcp_method: request.method, tool: toolName, args: toolArgs };
   logAccess(req, toolArgs?.name || null, 500);
 
-  const response = handleMcpRequest(request);
+  const response = await handleMcpRequest(request);
   if (response) res.json(response);
   else res.status(204).end();
 });
@@ -514,9 +514,9 @@ Sitemap: https://mcp.epistery.io/sitemap.xml
 `);
 });
 
-app.get('/sitemap.xml', (req, res) => {
-  const services = db.prepare('SELECT slug FROM services WHERE slug IS NOT NULL ORDER BY tools_count DESC LIMIT 10000').all();
-  const categories = db.prepare('SELECT slug FROM categories WHERE service_count > 0').all();
+app.get('/sitemap.xml', async (req, res) => {
+  const services = await db.all('SELECT slug FROM services WHERE slug IS NOT NULL ORDER BY tools_count DESC LIMIT 10000');
+  const categories = await db.all('SELECT slug FROM categories WHERE service_count > 0');
   const today = new Date().toISOString().split('T')[0];
 
   let xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -549,12 +549,42 @@ app.use('/static', express.static(STATIC_DIR, {
 }));
 
 // ============================================================
-app.listen(PORT, () => {
-  const stats = getStats();
-  console.log(`MCP Service Registry`);
-  console.log(`  Port:     ${PORT}`);
-  console.log(`  Services: ${stats.services}`);
-  console.log(`  Tools:    ${stats.total_tools}`);
-  console.log(`  Reachable: ${stats.reachable}`);
-  console.log(`  URL:      http://localhost:${PORT}/`);
+// Health endpoint
+// ============================================================
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'mcp-registry', pid: process.pid });
+});
+
+// ============================================================
+// Start
+// ============================================================
+const UPSTREAM = process.env.UPSTREAM === '1' || process.env.UPSTREAM === 'true';
+let server;
+
+async function start() {
+  await db.init();
+  const stats = await getStats();
+  server = app.listen(PORT, () => {
+    console.log(`MCP Service Registry`);
+    console.log(`  Port:     ${PORT}`);
+    if (UPSTREAM) console.log(`  Mode:     UPSTREAM (TLS terminated by harness)`);
+    console.log(`  Services: ${stats.services}`);
+    console.log(`  Tools:    ${stats.total_tools}`);
+    console.log(`  Reachable: ${stats.reachable}`);
+    console.log(`  URL:      http://localhost:${PORT}/`);
+  });
+}
+
+async function shutdown(signal) {
+  console.log(`[mcp-registry] ${signal} received, shutting down...`);
+  if (server) await new Promise(resolve => server.close(resolve));
+  await db.pool.end();
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+start().catch(e => {
+  console.error('Server start failed:', e);
+  process.exit(1);
 });

@@ -53,7 +53,7 @@ export const MCP_TOOLS = [
   },
 ];
 
-function toolFindService(args) {
+async function toolFindService(args) {
   const q = (args.query || '').trim();
   const category = args.category || null;
   const limit = Math.min(args.limit || 10, 50);
@@ -75,7 +75,7 @@ function toolFindService(args) {
     params = [`%${q}%`, `%${q}%`, `%${q}%`, limit];
   }
 
-  const results = db.prepare(sql).all(...params);
+  const results = await db.all(sql, params);
   return {
     query: { q, category, limit },
     count: results.length,
@@ -94,11 +94,11 @@ function toolFindService(args) {
   };
 }
 
-function toolServiceDetail(args) {
-  const svc = db.prepare('SELECT * FROM services WHERE name = ? OR slug = ?').get(args.name, args.name);
+async function toolServiceDetail(args) {
+  const svc = await db.get('SELECT * FROM services WHERE name = ? OR slug = ?', [args.name, args.name]);
   if (!svc) return { error: `Service not found: ${args.name}`, agent_hint: 'Use mcp_find_service to search.' };
 
-  const tools = db.prepare('SELECT name, description, input_schema, source FROM tools WHERE service_id = ?').all(svc.id);
+  const tools = await db.all('SELECT name, description, input_schema, source FROM tools WHERE service_id = ?', [svc.id]);
 
   return {
     name: svc.name,
@@ -130,21 +130,21 @@ function toolServiceDetail(args) {
   };
 }
 
-function toolFindTool(args) {
+async function toolFindTool(args) {
   const name = args.tool_name;
-  const exact = db.prepare(`
+  const exact = await db.all(`
     SELECT s.name, s.title, s.category, t.description, s.mcp_endpoint
     FROM tools t JOIN services s ON t.service_id = s.id
     WHERE t.name = ?
     ORDER BY s.tools_count DESC
-  `).all(name);
+  `, [name]);
 
-  const fuzzy = db.prepare(`
+  const fuzzy = await db.all(`
     SELECT s.name, s.title, s.category, t.name as tool, t.description, s.mcp_endpoint
     FROM tools t JOIN services s ON t.service_id = s.id
     WHERE t.name LIKE ? AND t.name != ?
     ORDER BY s.tools_count DESC LIMIT 20
-  `).all(`%${name}%`, name);
+  `, [`%${name}%`, name]);
 
   return {
     tool: name,
@@ -158,8 +158,8 @@ function toolFindTool(args) {
   };
 }
 
-function toolCategories() {
-  const cats = db.prepare('SELECT slug, name, description, service_count FROM categories WHERE service_count > 0 ORDER BY service_count DESC').all();
+async function toolCategories() {
+  const cats = await db.all('SELECT slug, name, description, service_count FROM categories WHERE service_count > 0 ORDER BY service_count DESC');
   return {
     count: cats.length,
     categories: cats,
@@ -167,31 +167,31 @@ function toolCategories() {
   };
 }
 
-function toolStats() {
+async function toolStats() {
   return {
-    services: db.prepare('SELECT COUNT(*) as n FROM services').get().n,
-    tools: db.prepare('SELECT COUNT(*) as n FROM tools').get().n,
-    categories: db.prepare('SELECT COUNT(*) as n FROM categories WHERE service_count > 0').get().n,
-    reachable: db.prepare("SELECT COUNT(*) as n FROM services WHERE probe_status = 'reachable'").get().n,
-    with_tools: db.prepare('SELECT COUNT(*) as n FROM services WHERE tools_count > 0').get().n,
-    with_repo: db.prepare('SELECT COUNT(*) as n FROM services WHERE repository_url IS NOT NULL').get().n,
-    top_services: db.prepare('SELECT name, title, tools_count FROM services WHERE tools_count > 0 ORDER BY tools_count DESC LIMIT 10').all(),
-    top_categories: db.prepare('SELECT slug, name, service_count FROM categories WHERE service_count > 0 ORDER BY service_count DESC LIMIT 10').all(),
+    services: (await db.get('SELECT COUNT(*) as n FROM services')).n,
+    tools: (await db.get('SELECT COUNT(*) as n FROM tools')).n,
+    categories: (await db.get('SELECT COUNT(*) as n FROM categories WHERE service_count > 0')).n,
+    reachable: (await db.get("SELECT COUNT(*) as n FROM services WHERE probe_status = 'reachable'")).n,
+    with_tools: (await db.get('SELECT COUNT(*) as n FROM services WHERE tools_count > 0')).n,
+    with_repo: (await db.get('SELECT COUNT(*) as n FROM services WHERE repository_url IS NOT NULL')).n,
+    top_services: await db.all('SELECT name, title, tools_count FROM services WHERE tools_count > 0 ORDER BY tools_count DESC LIMIT 10'),
+    top_categories: await db.all('SELECT slug, name, service_count FROM categories WHERE service_count > 0 ORDER BY service_count DESC LIMIT 10'),
   };
 }
 
-export function handleToolCall(name, args) {
+export async function handleToolCall(name, args) {
   switch (name) {
-    case 'mcp_find_service': return toolFindService(args || {});
-    case 'mcp_service_detail': return toolServiceDetail(args || {});
-    case 'mcp_find_tool': return toolFindTool(args || {});
-    case 'mcp_categories': return toolCategories();
-    case 'mcp_stats': return toolStats();
+    case 'mcp_find_service': return await toolFindService(args || {});
+    case 'mcp_service_detail': return await toolServiceDetail(args || {});
+    case 'mcp_find_tool': return await toolFindTool(args || {});
+    case 'mcp_categories': return await toolCategories();
+    case 'mcp_stats': return await toolStats();
     default: return { error: `Unknown tool: ${name}` };
   }
 }
 
-export function handleMcpRequest(request) {
+export async function handleMcpRequest(request) {
   const { method, params, id } = request;
 
   if (method === 'initialize') {
@@ -212,7 +212,7 @@ export function handleMcpRequest(request) {
   if (method === 'notifications/initialized') return null;
   if (method === 'tools/list') return { jsonrpc: '2.0', id, result: { tools: MCP_TOOLS } };
   if (method === 'tools/call') {
-    const result = handleToolCall(params?.name, params?.arguments || {});
+    const result = await handleToolCall(params?.name, params?.arguments || {});
     return {
       jsonrpc: '2.0',
       id,

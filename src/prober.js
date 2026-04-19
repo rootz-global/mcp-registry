@@ -137,26 +137,25 @@ async function probeOne(service) {
   }
 }
 
-function saveProbe(service, result) {
-  db.prepare(`
+async function saveProbe(service, result) {
+  await db.run(`
     INSERT INTO probes (service_id, probe_type, status_code, response_time_ms, tools_found, error)
     VALUES (?, 'tools_list', ?, ?, ?, ?)
-  `).run(service.id, result.status_code || null, result.response_time_ms || null, result.tools?.length || 0, result.error || null);
+  `, [service.id, result.status_code || null, result.response_time_ms || null, result.tools?.length || 0, result.error || null]);
 
-  db.prepare(`
-    UPDATE services SET last_probed = datetime('now'), probe_status = ?, tools_count = ?, tools_extracted = 1
+  await db.run(`
+    UPDATE services SET last_probed = NOW(), probe_status = ?, tools_count = ?, tools_extracted = 1
     WHERE id = ?
-  `).run(result.status, result.tools?.length || 0, service.id);
+  `, [result.status, result.tools?.length || 0, service.id]);
 
   // Save tools
   if (result.tools && result.tools.length > 0) {
-    const insertTool = db.prepare(`
-      INSERT OR REPLACE INTO tools (service_id, name, description, input_schema, source)
-      VALUES (?, ?, ?, ?, 'probe')
-    `);
     for (const t of result.tools) {
       const schema = t.inputSchema ? JSON.stringify(t.inputSchema) : null;
-      insertTool.run(service.id, t.name, t.description || '', schema);
+      await db.run(`
+        REPLACE INTO tools (service_id, name, description, input_schema, source)
+        VALUES (?, ?, ?, ?, 'probe')
+      `, [service.id, t.name, t.description || '', schema]);
     }
   }
 }
@@ -174,7 +173,7 @@ async function runParallel(services, concurrent) {
       const svc = queue.shift();
       if (!svc) break;
       const result = await probeOne(svc);
-      saveProbe(svc, result);
+      await saveProbe(svc, result);
       done++;
       if (result.status === 'reachable') {
         reachable++;
@@ -194,6 +193,7 @@ async function runParallel(services, concurrent) {
 }
 
 async function main() {
+  await db.init();
   const args = process.argv.slice(2);
   const all = args.includes('--all');
   const concurrentIdx = args.indexOf('--concurrent');
@@ -205,15 +205,15 @@ async function main() {
 
   let services;
   if (serviceName) {
-    services = db.prepare('SELECT * FROM services WHERE name = ?').all(serviceName);
+    services = await db.all('SELECT * FROM services WHERE name = ?', [serviceName]);
   } else {
     let query = `SELECT * FROM services WHERE mcp_endpoint IS NOT NULL AND transport_type = 'streamable-http'`;
     if (!all) {
-      query += ` AND (last_probed IS NULL OR last_probed < datetime('now', '-1 day'))`;
+      query += ` AND (last_probed IS NULL OR last_probed < DATE_SUB(NOW(), INTERVAL 1 DAY))`;
     }
     query += ` ORDER BY registry_published_at DESC`;
     if (topN) query += ` LIMIT ${topN}`;
-    services = db.prepare(query).all();
+    services = await db.all(query);
   }
 
   console.log(`Probing ${services.length} services (concurrent: ${concurrent})...`);
