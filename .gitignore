@@ -7,3 +7,4 @@ data/new_repos.txt
 .env
 *.log
 .idea
+package-lock.json

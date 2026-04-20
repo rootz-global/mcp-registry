@@ -33,8 +33,8 @@ Data Sources → Ingesters → SQLite → Categorizer → Prober → Static Buil
 
 ## Server Deployment
 
-- **Server:** Oracle Cloud epistery-scan (129.80.17.149)
-- **SSH:** `ssh -i ~/.ssh/rootz_epistery ubuntu@129.80.17.149`
+- **Server:** Oracle Cloud epistery-scan (epistery.io, 129.80.17.149)
+- **SSH:** `ssh -i ~/.ssh/rootz_epistery ubuntu@epistery.io`
 - **App:** `~/mcp-registry/` (cloned from rootz-global/mcp-registry)
 - **PM2:** `mcp-registry` on port 3600
 - **Nginx:** reverse proxy on ports 80/443 → localhost:3600
@@ -112,28 +112,29 @@ PORT=3600 node src/server.js
 cd mcp-registry
 git add -A && git commit -m "description" && git push
 
-# On server (129.80.17.149):
-cd ~/mcp-registry && git pull
+# On server (epistery.io):
+cd /opt/mcp-registry && git pull
 npm install  # if dependencies changed
 node src/static-builder.js  # if data changed
-pm2 restart mcp-registry
+# pm2 restart mcp-registry -- mcp-registry is launched by epistery-scan
+sudo systemctl restart epistery-scan
 
 # To update database (not in git):
 # Local: node src/db.js (checkpoint WAL)
 node --input-type=module -e "import db from './src/db.js'; db.pragma('wal_checkpoint(TRUNCATE)');"
 # Then scp:
-scp -i ~/.ssh/rootz_epistery data/registry.db ubuntu@129.80.17.149:~/mcp-registry/data/
+scp -i ~/.ssh/rootz_epistery data/registry.db ubuntu@epistery.io:~/mcp-registry/data/
 # Then restart:
-ssh -i ~/.ssh/rootz_epistery ubuntu@129.80.17.149 "cd ~/mcp-registry && pm2 restart mcp-registry"
+ssh -i ~/.ssh/rootz_epistery ubuntu@epistery.io "cd ~/mcp-registry && pm2 restart mcp-registry"
 ```
 
 ## Related Projects
 
-| Project | URL | Relationship |
-|---------|-----|-------------|
-| Origin SEC Registry | origin.rootz.global | Same pattern, SEC company data |
-| Epistery Scan | epistery.io | Signed web search engine (same server) |
-| Rootz MCP Tools | mcp.rootz.global | Rootz wallet/archive MCP tools |
+| Project | URL                                    | Relationship |
+|---------|----------------------------------------|-------------|
+| Origin SEC Registry | origin.rootz.global                    | Same pattern, SEC company data |
+| Epistery Scan | epistery.io (github.com/epistery/scan) | Signed web search engine (same server) |
+| Rootz MCP Tools | mcp.rootz.global                       | Rootz wallet/archive MCP tools |
 
 ## Design Documents
 
