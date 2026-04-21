@@ -78,6 +78,106 @@ function createOriginLeaf(content, parent = null) {
 }
 
 // ============================================================
+// MCP protocol helpers (same flow as prober.js)
+// ============================================================
+const MCP_TIMEOUT = 15000;
+const MCP_HEADERS = {
+  'Content-Type': 'application/json',
+  'Accept': 'application/json, text/event-stream',
+  'User-Agent': 'mcp-registry-proxy/0.1',
+};
+
+function parseMcpResponse(text) {
+  try { return JSON.parse(text); } catch {}
+  const dataLine = text.split('\n').find(l => l.startsWith('data: '));
+  if (dataLine) {
+    try { return JSON.parse(dataLine.slice(6)); } catch {}
+  }
+  return null;
+}
+
+async function mcpInitSession(endpoint) {
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: MCP_HEADERS,
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        clientInfo: { name: 'mcp-registry-proxy', version: '0.1.0' },
+        capabilities: {},
+      },
+    }),
+    signal: AbortSignal.timeout(MCP_TIMEOUT),
+  });
+
+  if (resp.status === 401 || resp.status === 403) {
+    return { ok: false, status: 'auth_required', code: resp.status };
+  }
+  if (!resp.ok) {
+    return { ok: false, status: 'http_error', code: resp.status };
+  }
+
+  const sessionId = resp.headers.get('mcp-session-id');
+  const sessionHeader = sessionId ? { 'mcp-session-id': sessionId } : {};
+  await resp.text(); // consume body
+
+  // Send notifications/initialized
+  await fetch(endpoint, {
+    method: 'POST',
+    headers: { ...MCP_HEADERS, ...sessionHeader },
+    body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }),
+    signal: AbortSignal.timeout(MCP_TIMEOUT),
+  }).catch(() => {});
+
+  return { ok: true, sessionHeader };
+}
+
+async function mcpToolsList(endpoint) {
+  const start = Date.now();
+  const session = await mcpInitSession(endpoint);
+  if (!session.ok) {
+    return { status: session.status, tools: [], response_time_ms: Date.now() - start };
+  }
+
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: { ...MCP_HEADERS, ...session.sessionHeader },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+    signal: AbortSignal.timeout(MCP_TIMEOUT),
+  });
+
+  const text = await resp.text();
+  const data = parseMcpResponse(text);
+  const tools = data?.result?.tools || [];
+
+  return { status: 'ok', tools, response_time_ms: Date.now() - start };
+}
+
+async function mcpToolCall(endpoint, toolName, args) {
+  const start = Date.now();
+  const session = await mcpInitSession(endpoint);
+  if (!session.ok) {
+    return { status: session.status, data: null, response_time_ms: Date.now() - start };
+  }
+
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: { ...MCP_HEADERS, ...session.sessionHeader },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 3, method: 'tools/call',
+      params: { name: toolName, arguments: args },
+    }),
+    signal: AbortSignal.timeout(MCP_TIMEOUT),
+  });
+
+  const text = await resp.text();
+  const data = parseMcpResponse(text);
+
+  return { status: 'ok', data: data?.result || data, response_time_ms: Date.now() - start };
+}
+
+// ============================================================
 // Middleware — AI discovery headers
 // ============================================================
 app.use((req, res, next) => {
@@ -384,6 +484,59 @@ app.get('/api/service/:name(*)', async (req, res) => {
 });
 
 // ============================================================
+// POST /api/service/:name/tools — live tools/list from MCP endpoint
+// ============================================================
+app.post('/api/service/:name(*)/tools', async (req, res) => {
+  const name = req.params.name;
+  const service = await db.get('SELECT * FROM services WHERE name = ? OR slug = ?', [name, name]);
+  if (!service) return res.status(404).json({ error: 'Service not found', name });
+  if (!service.mcp_endpoint) return res.status(400).json({ error: 'Service has no MCP endpoint', name });
+
+  logAccess(req, service.name, 500);
+
+  try {
+    const result = await mcpToolsList(service.mcp_endpoint);
+    res.json({
+      service: service.name,
+      endpoint: service.mcp_endpoint,
+      status: result.status,
+      tools: result.tools,
+      response_time_ms: result.response_time_ms,
+    });
+  } catch (e) {
+    res.status(502).json({ error: 'Probe failed', message: e.message });
+  }
+});
+
+// ============================================================
+// POST /api/service/:name/call — proxy a tools/call to MCP endpoint
+// ============================================================
+app.post('/api/service/:name(*)/call', async (req, res) => {
+  const name = req.params.name;
+  const service = await db.get('SELECT * FROM services WHERE name = ? OR slug = ?', [name, name]);
+  if (!service) return res.status(404).json({ error: 'Service not found', name });
+  if (!service.mcp_endpoint) return res.status(400).json({ error: 'Service has no MCP endpoint', name });
+
+  const { tool, arguments: args } = req.body || {};
+  if (!tool) return res.status(400).json({ error: 'Request body must include "tool" name' });
+
+  logAccess(req, service.name, 800);
+
+  try {
+    const result = await mcpToolCall(service.mcp_endpoint, tool, args || {});
+    res.json({
+      service: service.name,
+      tool,
+      status: result.status,
+      result: result.data,
+      response_time_ms: result.response_time_ms,
+    });
+  } catch (e) {
+    res.status(502).json({ error: 'Call failed', message: e.message });
+  }
+});
+
+// ============================================================
 // GET /api/tool/:name — find which services offer this tool
 // ============================================================
 app.get('/api/tool/:name', async (req, res) => {
@@ -460,6 +613,72 @@ app.get('/api/services', async (req, res) => {
     offset,
     services: rows,
   });
+});
+
+// ============================================================
+// POST /api/services — register or update a service
+// ============================================================
+app.post('/api/services', async (req, res) => {
+  const { name, title, description, category, mcp_endpoint, transport_type, website_url, repository_url } = req.body || {};
+
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  logAccess(req, name, 300);
+
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  try {
+    // UPSERT — insert or update on duplicate name
+    await db.run(`
+      INSERT INTO services (name, slug, title, description, category, mcp_endpoint, transport_type, website_url, repository_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        slug = VALUES(slug),
+        title = COALESCE(VALUES(title), title),
+        description = COALESCE(VALUES(description), description),
+        category = COALESCE(VALUES(category), category),
+        mcp_endpoint = COALESCE(VALUES(mcp_endpoint), mcp_endpoint),
+        transport_type = COALESCE(VALUES(transport_type), transport_type),
+        website_url = COALESCE(VALUES(website_url), website_url),
+        repository_url = COALESCE(VALUES(repository_url), repository_url)
+    `, [name, slug, title || null, description || null, category || null, mcp_endpoint || null, transport_type || null, website_url || null, repository_url || null]);
+
+    // Update category count
+    if (category) {
+      await db.run('UPDATE categories SET service_count = (SELECT COUNT(*) FROM services WHERE category = ?) WHERE slug = ?', [category, category]);
+    }
+
+    const service = await db.get('SELECT id, name, slug, title, description, category, mcp_endpoint, transport_type FROM services WHERE name = ?', [name]);
+
+    // Optional: auto-probe if endpoint provided
+    let probeResult = null;
+    if (mcp_endpoint && transport_type === 'streamable-http') {
+      try {
+        probeResult = await mcpToolsList(mcp_endpoint);
+        if (probeResult.tools.length > 0) {
+          await db.run('UPDATE services SET probe_status = ?, tools_count = ?, last_probed = NOW() WHERE id = ?',
+            [probeResult.status === 'ok' ? 'reachable' : probeResult.status, probeResult.tools.length, service.id]);
+          for (const t of probeResult.tools) {
+            const schema = t.inputSchema ? JSON.stringify(t.inputSchema) : null;
+            await db.run(
+              'REPLACE INTO tools (service_id, name, description, input_schema, source) VALUES (?, ?, ?, ?, ?)',
+              [service.id, t.name, t.description || '', schema, 'registration']
+            );
+          }
+        }
+      } catch (e) {
+        probeResult = { status: 'error', error: e.message };
+      }
+    }
+
+    res.json({
+      status: 'ok',
+      service,
+      probe: probeResult ? { status: probeResult.status, tools_found: probeResult.tools?.length || 0 } : null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Registration failed', message: e.message });
+  }
 });
 
 // ============================================================
@@ -549,10 +768,23 @@ app.use('/static', express.static(STATIC_DIR, {
 }));
 
 // ============================================================
+// Express error middleware — catch unhandled route errors
+// ============================================================
+app.use((err, req, res, next) => {
+  console.error('[mcp-registry] Express error:', err.message || err);
+  res.status(500).json({ error: 'Internal server error', message: err.message });
+});
+
+// ============================================================
 // Health endpoint
 // ============================================================
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'mcp-registry', pid: process.pid });
+app.get('/health', async (req, res) => {
+  try {
+    await db.get('SELECT 1');
+    res.json({ status: 'ok', service: 'mcp-registry', pid: process.pid });
+  } catch (e) {
+    res.status(503).json({ status: 'error', message: e.message });
+  }
 });
 
 // ============================================================
@@ -583,6 +815,13 @@ async function shutdown(signal) {
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+process.on('uncaughtException', (err) => {
+  console.error('[mcp-registry] Uncaught exception:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[mcp-registry] Unhandled rejection:', reason);
+});
 
 start().catch(e => {
   console.error('Server start failed:', e);
