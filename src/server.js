@@ -592,13 +592,13 @@ app.get('/api/services', async (req, res) => {
   logAccess(req, null, 600);
 
   const where = category ? 'WHERE category = ?' : '';
-  const params = category ? [category, limit, offset] : [limit, offset];
+  const params = category ? [category] : [];
 
   const rows = await db.all(`
     SELECT name, slug, title, description, category, tools_count, probe_status
     FROM services ${where}
     ORDER BY tools_count DESC, stars DESC
-    LIMIT ? OFFSET ?
+    LIMIT ${Number(limit)} OFFSET ${Number(offset)}
   `, params);
 
   const totalRow = category
