@@ -295,7 +295,7 @@ ${topCategories.map(c => `<div class="cat"><a href="/api/services?category=${c.s
 <p>Search: <a href="/api/search?q=stripe">/api/search?q=stripe</a></p>
 
 <h2>For Humans</h2>
-<p>Browse <a href="/api/categories">categories</a>, search <a href="/api/search?q=email">services</a>, or query the MCP endpoint directly.</p>
+<p>Browse <a href="/api/categories">categories</a>, search <a href="/api/search?q=email">services</a>, or <a href="/register">register your MCP service</a>.</p>
 
 <footer style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; color: #666; font-size: 0.85em;">
 <a href="https://rootz.global">Rootz</a> · <a href="/.well-known/ai">.well-known/ai</a> · <a href="/api/stats">stats</a> · <a href="https://origin.rootz.global">origin.rootz.global</a>
@@ -679,6 +679,259 @@ app.post('/api/services', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: 'Registration failed', message: e.message });
   }
+});
+
+// ============================================================
+// POST /api/service/:name/register-tools — submit tool schemas directly
+// ============================================================
+app.post('/api/service/:name(*)/register-tools', async (req, res) => {
+  const name = req.params.name;
+  const service = await db.get('SELECT * FROM services WHERE name = ? OR slug = ?', [name, name]);
+  if (!service) return res.status(404).json({ error: 'Service not found', name });
+
+  const { tools } = req.body || {};
+  if (!Array.isArray(tools) || tools.length === 0) {
+    return res.status(400).json({ error: 'Request body must include "tools" array with at least one tool' });
+  }
+
+  logAccess(req, service.name, 400);
+
+  try {
+    let added = 0;
+    for (const t of tools) {
+      if (!t.name) continue;
+      const schema = t.input_schema ? JSON.stringify(t.input_schema) : null;
+      await db.run(
+        `INSERT INTO tools (service_id, name, description, input_schema, source)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           description = VALUES(description),
+           input_schema = VALUES(input_schema),
+           source = VALUES(source)`,
+        [service.id, t.name, t.description || '', schema, 'manual']
+      );
+      added++;
+    }
+
+    // Update tools_count on the service
+    const countRow = await db.get('SELECT COUNT(*) as n FROM tools WHERE service_id = ?', [service.id]);
+    await db.run('UPDATE services SET tools_count = ?, tools_extracted = 1 WHERE id = ?', [countRow.n, service.id]);
+
+    res.json({
+      status: 'ok',
+      service: service.name,
+      tools_added: added,
+      total_tools: countRow.n,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Tool registration failed', message: e.message });
+  }
+});
+
+// ============================================================
+// GET /register — tool registration UI
+// ============================================================
+app.get('/register', async (req, res) => {
+  const categories = await db.all('SELECT slug, name FROM categories ORDER BY name');
+  res.type('html').send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Register — MCP Service Registry</title>
+<meta name="description" content="Submit your MCP service and tools to the registry.">
+<link rel="canonical" href="https://mcp.epistery.io/register">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1a1a1a; }
+  h1 { margin: 0 0 4px; }
+  h2 { margin: 28px 0 12px; font-size: 1.2em; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  a { color: #0066cc; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  label { display: block; font-weight: 600; margin: 12px 0 4px; font-size: 0.9em; }
+  input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.95em; font-family: inherit; }
+  textarea { resize: vertical; font-family: ui-monospace, 'Cascadia Code', Menlo, monospace; font-size: 0.85em; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: #0066cc; box-shadow: 0 0 0 2px rgba(0,102,204,0.15); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .hint { color: #666; font-size: 0.8em; margin: 2px 0 0; }
+  button { background: #0066cc; color: white; border: none; padding: 10px 24px; border-radius: 4px; font-size: 1em; cursor: pointer; margin-top: 8px; }
+  button:hover { background: #0052a3; }
+  button.secondary { background: #666; }
+  button.secondary:hover { background: #555; }
+  .tool-entry { background: #f7f7f7; border: 1px solid #e0e0e0; border-radius: 6px; padding: 14px; margin: 8px 0; position: relative; }
+  .tool-entry .remove { position: absolute; top: 8px; right: 10px; background: none; border: none; color: #c00; cursor: pointer; font-size: 1.1em; padding: 0; margin: 0; }
+  #result { margin-top: 20px; padding: 14px; border-radius: 6px; display: none; }
+  #result.ok { display: block; background: #e8f5e9; border: 1px solid #4caf50; }
+  #result.err { display: block; background: #ffebee; border: 1px solid #f44336; }
+  .or-divider { text-align: center; color: #999; margin: 20px 0; font-size: 0.9em; }
+  .or-divider span { background: white; padding: 0 12px; }
+  .or-divider::before { content: ''; display: block; border-top: 1px solid #ddd; margin-bottom: -10px; }
+</style>
+</head>
+<body>
+<h1>Register a Service</h1>
+<p>Add your MCP server to the <a href="/">Epistery MCP Registry</a>. Provide an endpoint to auto-discover tools, or add them manually below.</p>
+
+<form id="regForm">
+<h2>Service</h2>
+<label for="name">Name *</label>
+<input id="name" name="name" required placeholder="com.yourorg/service-name">
+<p class="hint">Unique identifier. Convention: com.org/name or @scope/name</p>
+
+<div class="row">
+  <div>
+    <label for="title">Title</label>
+    <input id="title" name="title" placeholder="My MCP Service">
+  </div>
+  <div>
+    <label for="category">Category</label>
+    <select id="category" name="category">
+      <option value="">— select —</option>
+      ${categories.map(c => `<option value="${escapeHtml(c.slug)}">${escapeHtml(c.name)}</option>`).join('\n      ')}
+    </select>
+  </div>
+</div>
+
+<label for="description">Description</label>
+<textarea id="description" name="description" rows="2" placeholder="What does this service do?"></textarea>
+
+<div class="row">
+  <div>
+    <label for="mcp_endpoint">MCP Endpoint</label>
+    <input id="mcp_endpoint" name="mcp_endpoint" type="url" placeholder="https://your-server.com/mcp">
+  </div>
+  <div>
+    <label for="transport_type">Transport</label>
+    <select id="transport_type" name="transport_type">
+      <option value="">— select —</option>
+      <option value="streamable-http" selected>streamable-http</option>
+      <option value="sse">SSE</option>
+      <option value="stdio">stdio</option>
+    </select>
+  </div>
+</div>
+
+<div class="row">
+  <div>
+    <label for="website_url">Website</label>
+    <input id="website_url" name="website_url" type="url" placeholder="https://...">
+  </div>
+  <div>
+    <label for="repository_url">Repository</label>
+    <input id="repository_url" name="repository_url" type="url" placeholder="https://github.com/...">
+  </div>
+</div>
+
+<div class="or-divider"><span>tools — auto-probe or add manually</span></div>
+
+<p style="font-size:0.9em; color:#555;">If you provided a streamable-http endpoint above, we'll auto-probe it for tools. Otherwise, add tools manually:</p>
+
+<div id="tools-list"></div>
+<button type="button" class="secondary" onclick="addTool()">+ Add tool</button>
+
+<div style="margin-top: 24px;">
+  <button type="submit">Register</button>
+</div>
+</form>
+
+<div id="result"></div>
+
+<script>
+let toolIdx = 0;
+
+function addTool(data) {
+  const i = toolIdx++;
+  const div = document.createElement('div');
+  div.className = 'tool-entry';
+  div.id = 'tool-' + i;
+  div.innerHTML = \`
+    <button type="button" class="remove" onclick="this.parentElement.remove()">&times;</button>
+    <div class="row">
+      <div>
+        <label>Tool name *</label>
+        <input name="tool_name_\${i}" required value="\${data?.name || ''}" placeholder="create_customer">
+      </div>
+      <div>
+        <label>Description</label>
+        <input name="tool_desc_\${i}" value="\${data?.description || ''}" placeholder="Creates a new customer record">
+      </div>
+    </div>
+    <label>Input schema (JSON)</label>
+    <textarea name="tool_schema_\${i}" rows="4" placeholder='{"type":"object","properties":{"name":{"type":"string"}}}'>\${data?.input_schema ? JSON.stringify(data.input_schema, null, 2) : ''}</textarea>
+  \`;
+  document.getElementById('tools-list').appendChild(div);
+}
+
+document.getElementById('regForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const resultEl = document.getElementById('result');
+  resultEl.className = '';
+  resultEl.style.display = 'none';
+
+  const fd = new FormData(e.target);
+  const body = {
+    name: fd.get('name'),
+    title: fd.get('title') || undefined,
+    description: fd.get('description') || undefined,
+    category: fd.get('category') || undefined,
+    mcp_endpoint: fd.get('mcp_endpoint') || undefined,
+    transport_type: fd.get('transport_type') || undefined,
+    website_url: fd.get('website_url') || undefined,
+    repository_url: fd.get('repository_url') || undefined,
+  };
+
+  try {
+    // 1. Register the service
+    const svcResp = await fetch('/api/services', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const svcData = await svcResp.json();
+    if (!svcResp.ok) throw new Error(svcData.error || 'Registration failed');
+
+    // 2. Submit manual tools if any
+    const toolEntries = document.querySelectorAll('.tool-entry');
+    let manualTools = [];
+    toolEntries.forEach((el, idx) => {
+      const nameInput = el.querySelector('input[name^="tool_name_"]');
+      const descInput = el.querySelector('input[name^="tool_desc_"]');
+      const schemaInput = el.querySelector('textarea[name^="tool_schema_"]');
+      if (nameInput?.value) {
+        let schema = null;
+        try { schema = schemaInput?.value ? JSON.parse(schemaInput.value) : null; } catch {}
+        manualTools.push({ name: nameInput.value, description: descInput?.value || '', input_schema: schema });
+      }
+    });
+
+    if (manualTools.length > 0) {
+      const toolResp = await fetch('/api/service/' + encodeURIComponent(body.name) + '/register-tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tools: manualTools }),
+      });
+      const toolData = await toolResp.json();
+      if (!toolResp.ok) throw new Error(toolData.error || 'Tool registration failed');
+      svcData.manual_tools = toolData;
+    }
+
+    let msg = '<strong>Registered:</strong> ' + body.name;
+    if (svcData.probe?.tools_found) msg += '<br>Auto-probed ' + svcData.probe.tools_found + ' tools from endpoint';
+    if (svcData.manual_tools?.tools_added) msg += '<br>' + svcData.manual_tools.tools_added + ' manual tools added';
+    msg += '<br><a href="/api/service/' + encodeURIComponent(body.name) + '">View service &rarr;</a>';
+    resultEl.className = 'ok';
+    resultEl.innerHTML = msg;
+  } catch (err) {
+    resultEl.className = 'err';
+    resultEl.innerHTML = '<strong>Error:</strong> ' + err.message;
+  }
+});
+</script>
+
+<footer style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; color: #666; font-size: 0.85em;">
+<a href="/">Home</a> · <a href="/api/categories">Categories</a> · <a href="/.well-known/ai">.well-known/ai</a> · <a href="https://rootz.global">Rootz</a>
+</footer>
+</body>
+</html>`);
 });
 
 // ============================================================

@@ -92,9 +92,14 @@ These endpoints open a real MCP session (initialize, notifications/initialized, 
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/register` | GET | Web UI for registering services and tools |
 | `/api/services` | POST | Register or update a service (UPSERT) |
+| `/api/service/{name}/register-tools` | POST | Submit tool schemas for an existing service |
+
+#### Register a service
 
 ```json
+POST /api/services
 {
   "name": "sec-records.epistery.io",
   "title": "SEC Company Records",
@@ -106,6 +111,33 @@ These endpoints open a real MCP session (initialize, notifications/initialized, 
 ```
 
 If `mcp_endpoint` and `transport_type: streamable-http` are provided, the service is auto-probed on registration and tools are extracted.
+
+#### Submit tools manually
+
+```json
+POST /api/service/{name}/register-tools
+{
+  "tools": [
+    {
+      "name": "create_customer",
+      "description": "Creates a new customer record",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "email": { "type": "string" }
+        }
+      }
+    }
+  ]
+}
+```
+
+Tools are upserted (matched on service_id + name) with `source: 'manual'`. The service's `tools_count` is updated automatically.
+
+#### Web UI
+
+The `/register` page combines both flows: fill in service details, optionally provide an MCP endpoint for auto-probing, and/or add tools manually with name, description, and JSON input schema.
 
 ### Native MCP Endpoint
 
